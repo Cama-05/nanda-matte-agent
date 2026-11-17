@@ -36,7 +36,7 @@ MY_AGENT_DESCRIPTION = os.getenv(
 )
 MY_AGENT_PROVIDER = os.getenv("MY_AGENT_PROVIDER", "Matteo")
 MY_AGENT_PROVIDER_URL = os.getenv("MY_AGENT_PROVIDER_URL", "https://github.com/projnanda")
-NANDA_REGISTRY_URL = os.getenv("NANDA_REGISTRY_URL", "https://nanda-testbed-production.up.railway.app")
+NANDA_REGISTRY_URL = os.getenv("NANDA_REGISTRY_URL", "https://nest.projectnanda.org/api/agents")
 
 OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "http://localhost:20128/v1")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "omniroute-free")
@@ -203,15 +203,22 @@ async def startup_event():
     logger.info(f"Avvio {MY_AGENT_NAME} ({MY_AGENT_USERNAME})...")
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(f"{NANDA_REGISTRY_URL.rstrip('/')}/api/agents")
+            resp = await client.get(NANDA_REGISTRY_URL)
             if resp.status_code == 200:
-                agents_list = resp.json()
+                data = resp.json()
+                agents_list = data.get("agents", data) if isinstance(data, dict) else data
                 if isinstance(agents_list, list):
                     for ag in agents_list:
-                        u = ag.get("username")
-                        if u:
-                            known_agents[u] = ag
-                    logger.info(f"Sincronizzati {len(known_agents)} agenti dalla testbed NANDA.")
+                        u = ag.get("username") or ag.get("name") or ag.get("id")
+                        endpoint = ag.get("endpoint") or ag.get("url")
+                        if u and endpoint:
+                            known_agents[u] = {
+                                "username": u,
+                                "name": ag.get("name", u),
+                                "url": endpoint.replace("/a2a", ""),
+                                "description": ag.get("description", "")
+                            }
+                    logger.info(f"Sincronizzati {len(known_agents)} agenti dalla testbed NANDA/NEST.")
     except Exception as e:
         logger.warning(f"Impossibile sincronizzare la testbed NANDA all'avvio: {e}")
 
@@ -321,12 +328,19 @@ async def a2a_endpoint(msg: A2AMessage):
         if not target_agent:
             try:
                 async with httpx.AsyncClient(timeout=3.0) as client:
-                    resp = await client.get(f"{NANDA_REGISTRY_URL.rstrip('/')}/api/agents")
+                    resp = await client.get(NANDA_REGISTRY_URL)
                     if resp.status_code == 200:
-                        for ag in resp.json():
-                            if ag.get("username") == target_id:
-                                target_agent = ag
-                                known_agents[target_id] = ag
+                        data = resp.json()
+                        agents_list = data.get("agents", data) if isinstance(data, dict) else data
+                        for ag in agents_list:
+                            u = ag.get("username") or ag.get("name") or ag.get("id")
+                            if u == target_id:
+                                endpoint = ag.get("endpoint") or ag.get("url")
+                                target_agent = {
+                                    "username": u,
+                                    "url": endpoint.replace("/a2a", "") if endpoint else None
+                                }
+                                known_agents[target_id] = target_agent
                                 break
             except Exception:
                 pass
